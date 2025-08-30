@@ -19,13 +19,14 @@
 import bpy
 import numpy as np
 
+from .properties.blended_mpm_object_attributes import optional_attributes_set_all
+from .properties.util import get_selected_simulation
+from .bridge import InputNames
 from .magic_consts import (
     BLENDED_MPM_BREAKING_FRAME,
     FLUID_PARTICLES,
     SOLID_PARTICLES,
     BLENDED_MPM_TRANSFORM,
-    BLENDED_MPM_REFERENCE_INDEX,
-    BLENDED_MPM_REFERENCE_OFFSET,
 )
 
 from .nodes.geometry_nodes_move_with_reference import (
@@ -38,64 +39,115 @@ from .nodes.geometry_nodes_store_breaking_frame import (
 from .nodes.geometry_nodes_remove_broken import create_geometry_nodes_remove_broken
 
 
-def selectable_particle_objects(_, _context):
+def selectable_driving_objects(_, context):
+    input_names = InputNames(get_selected_simulation(context), 0)
     return [
-        (obj.name, obj.name, "")
-        for obj in bpy.data.objects
-        if (
-            obj.blended_mpm_object.output_type == SOLID_PARTICLES
-            or obj.blended_mpm_object.output_type == FLUID_PARTICLES
-        )
+        (name, name, "")
+        for name in input_names.solid_names.union(input_names.fluid_names)
     ]
 
 
 class OBJECT_OT_Blended_MPM_Move_With_Particles(bpy.types.Operator):
     bl_idname = "object.blended_mpm_move_with_particles"
     bl_label = "Blended MPM Move with Particles"
-    bl_description = f"""Use a Blended MPM particle output to animate this mesh.
-
-This adds the point attributes {BLENDED_MPM_REFERENCE_INDEX} and {BLENDED_MPM_REFERENCE_OFFSET}.
-
-This happens in two steps:
-1. "Blended MPM Store Reference" is applied.
-2. "Blended MPM Move With Reference" is attached.
-
-Note that the references are calculated in the current configuration.
-In most cases, this should be done while displaying the initial frame."""
+    bl_description = "TODO"
+    # This description is out of date
+    # f"""Use a Blended MPM particle output to animate this mesh.
+    #
+    # This adds the point attributes {BLENDED_MPM_REFERENCE_INDEX} and {BLENDED_MPM_REFERENCE_OFFSET}.
+    #
+    # This happens in two steps:
+    # 1. "Blended MPM Store Reference" is applied.
+    # 2. "Blended MPM Move With Reference" is attached.
+    #
+    # Note that the references are calculated in the current configuration.
+    # In most cases, this should be done while displaying the initial frame."""
     bl_options = {"REGISTER", "UNDO"}
 
-    particle_obj: bpy.props.EnumProperty(
-        items=selectable_particle_objects,
-        name="Driving Particle Object",
-        description=f"""You can only select active particle output objects.
-The object should have the {BLENDED_MPM_TRANSFORM} attribute.""",
+    driving_input_name: bpy.props.EnumProperty(
+        items=selectable_driving_objects,
+        name="Driving Object",
+        description=f"""This must yield an output that can receive the {BLENDED_MPM_TRANSFORM} attribute.""",
         options=set(),
+    )  # type: ignore
+    reference_frame: bpy.props.IntProperty(
+        name="Reference Frame",
+        description="""The frame to use as reference.
+
+Set the actually displayed frame, but it's stored as simulation 0-indexed frame.""",
+        default=0,
     )  # type: ignore
 
     @classmethod
     def poll(cls, context):
         return (
-            context.active_object is not None
+            get_selected_simulation(context) is not None
+            and context.active_object is not None
             and context.active_object.select_get()
             and not context.active_object.blended_mpm_object.simulation_uuid
         )
 
     def execute(self, context):
         obj = context.active_object
+        simulation = get_selected_simulation(context)
 
-        modifier = obj.modifiers.new("Blended MPM Temporary", type="NODES")
+        input_names = InputNames(get_selected_simulation(context), 0)
+        if self.driving_input_name in input_names.solid_names:
+            output_type = SOLID_PARTICLES
+        elif self.driving_input_name in input_names.fluid_names:
+            output_type = FLUID_PARTICLES
+        else:
+            raise RuntimeError("Couldn't determine output_type")
+
+        def create_output_obj(name):
+            output_obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
+            output_obj.blended_mpm_object.input_name = self.driving_input_name
+            output_obj.blended_mpm_object.simulation_uuid = simulation.uuid
+            output_obj.blended_mpm_object.output_type = output_type
+
+            optional_attributes_set_all(
+                output_obj.blended_mpm_object.optional_attributes, False
+            )
+            output_obj.blended_mpm_object.optional_attributes.solid_transformations = (
+                True
+            )
+
+            context.collection.objects.link(output_obj)
+
+            return output_obj
+
+        reference_obj = create_output_obj(f"REFERENCE - {self.driving_input_name}")
+        reference_obj.blended_mpm_object.sync_once = True
+        reference_obj.blended_mpm_object.sync_once_frame = (
+            self.reference_frame - simulation.display_start_frame
+        )
+        self.report(
+            {"INFO"},
+            f"Added {reference_obj.name} to output objects of {simulation.name} as reference to simulation frame #{reference_obj.blended_mpm_object.sync_once_frame}.",
+        )
+
+        modifier = obj.modifiers.new(
+            f"{OBJECT_OT_Blended_MPM_Move_With_Particles.bl_label} - 1/2", type="NODES"
+        )
         modifier.node_group = create_geometry_nodes_store_reference()
-        modifier["Socket_2"] = bpy.data.objects[self.particle_obj]
-        bpy.ops.object.modifier_apply(modifier=modifier.name)
+        modifier["Socket_2"] = reference_obj
 
-        modifier = obj.modifiers.new("Blended MPM Default", type="NODES")
+        driving_obj = create_output_obj(f"DRIVING - {self.driving_input_name}")
+        self.report(
+            {"INFO"},
+            f"Added {driving_obj.name} to output objects of {simulation.name} as driving object for {obj.name}.",
+        )
+
+        modifier = obj.modifiers.new(
+            f"{OBJECT_OT_Blended_MPM_Move_With_Particles.bl_label} - 2/2", type="NODES"
+        )
         modifier.node_group = create_geometry_nodes_move_with_reference()
-        modifier["Socket_2"] = bpy.data.objects[self.particle_obj]
+        modifier["Socket_2"] = driving_obj
         modifier["Socket_3"] = 3
 
         self.report(
             {"INFO"},
-            message=f"{obj.name} is now moving with {self.particle_obj}",
+            message=f"{obj.name} is now moving with {driving_obj.name}",
         )
         return {"FINISHED"}
 
@@ -120,7 +172,7 @@ That means it can be quite slow, depending on the complexity of the scene.
     bl_options = {"REGISTER", "UNDO"}
 
     particle_obj: bpy.props.EnumProperty(
-        items=selectable_particle_objects,
+        items=selectable_driving_objects,
         name="Driving Particle Object",
         description="This should match the particle object that is moving the mesh.",
         options=set(),

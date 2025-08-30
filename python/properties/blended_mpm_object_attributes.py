@@ -31,6 +31,25 @@ from ..magic_consts import (
 )
 
 
+def optional_attributes_set_all(optional_attributes, value):
+    optional_attributes.grid_collider_distances = value
+    optional_attributes.grid_collider_normals = value
+    optional_attributes.grid_momentum_masses = value
+    optional_attributes.grid_momentum_velocities = value
+    optional_attributes.solid_masses = value
+    optional_attributes.solid_initial_volumes = value
+    optional_attributes.solid_velocities = value
+    optional_attributes.solid_transformations = value
+    optional_attributes.solid_energies = value
+    optional_attributes.solid_collider_insides = value
+    optional_attributes.fluid_velocities = value
+    optional_attributes.fluid_transformations = value
+    optional_attributes.fluid_collider_insides = value
+    optional_attributes.fluid_pressures = value
+    optional_attributes.collider_normals = value
+    optional_attributes.collider_velocities = value
+
+
 class Blended_MPM_Optional_Attributes(bpy.types.PropertyGroup):
     grid_collider_distances: bpy.props.BoolProperty(
         name="Distance",

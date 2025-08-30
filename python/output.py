@@ -104,6 +104,10 @@ def add_attribute(mesh, array, attribute_name, attribute_type, domain="POINT"):
 
 def sync_output(simulation, obj, num_colliders, frame):
     mpm = obj.blended_mpm_object
+
+    if mpm.sync_once and frame != mpm.sync_once_frame:
+        return
+
     if mpm.output_type == GRID_COLLIDER_DISTANCE:
         # pylint: disable=unnecessary-lambda-assignment
         ffa = lambda attribute: fetch_flat_attribute(
